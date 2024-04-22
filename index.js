@@ -146,7 +146,7 @@ app.put('/users/:id', (req, res) => {
         // Return response
         return res.send({
             success: true,
-            message: 'USer updated successfully!',
+            message: 'User updated successfully!',
             data   : {
                 id: req.params.id,
                 username, 
