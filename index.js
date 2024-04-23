@@ -3,6 +3,7 @@ const express = require("express");
 const app     = express();
 const mysql   = require('mysql');
 const redis   = require('redis');
+const WebSocket = require('websocket').server;
 
 // Set up CORS
 const corsOptions = {
@@ -47,6 +48,27 @@ const port = 5000;
 // Listen on port
 app.listen(port, () => {
     console.log(`Running at - http://localhost:${port}`);
+});
+
+//Websocket
+const webSocketServer = new WebSocket({
+    httpServer: server,
+});
+
+webSocketServer.on('request', (request) => {
+    const connection = request.accept(null, request.origin);
+
+    connection.on('message', (message) => {
+        // Handle incoming WebSocket messages here
+    });
+
+    connection.on('close', (reasonCode, description) => {
+        // Handle WebSocket connection closure here
+    });
+});
+
+server.listen(3001, () => {
+    console.log('WebSocket server is listening on port 3001');
 });
 
 // Fetching data from Database or Redis
