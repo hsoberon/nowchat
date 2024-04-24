@@ -1,13 +1,15 @@
-const cors    = require("cors");
-const express = require("express");
-const app     = express();
-const mysql   = require('mysql');
-const redis   = require('redis');
-const WebSocket = require('websocket').server;
+const cors                  = require("cors");
+const express               = require("express");
+const app                   = express();
+const http                  = require('http');
+const url                   = require("url")
+const { WebSocketServer }   = require("ws")
+const mysql                 = require('mysql');
+const redis                 = require('redis');
 
 // Set up CORS
 const corsOptions = {
-    origin: "http://localhost:3000"
+    origin: ["http://localhost:3000", "http://127.0.0.1:3000"]
 };
 app.use(cors(corsOptions));
 
@@ -25,7 +27,7 @@ let redisClient;
 
 // MySQL setup
 const DB = mysql.createConnection({
-    host    : 'localhost',
+    host    : '127.0.0.1',
     user    : 'root',
     password: 'root',
     database: 'now_chat',
@@ -38,38 +40,207 @@ DB.connect((err) => {
 });
 
 // Routes
-app.get('/', (req, res) => {
-    res.send('<h1 style="text-align: center;">Welcome to the Now Chat api!</h1>');
-});
+// app.get('/', (req, res) => {
+//     res.send('<h1 style="text-align: center;">Welcome to the Now Chat api!</h1>');
+// });
 
 // Start server
 const port = 5000;
 
+
+//WebSocket Server
+const wsServer = new WebSocketServer({ port: 8080 });
+
+wsServer.on("connection", (connection, request) => {
+    
+    console.log("WS Connected");
+
+    // getUsers().then(msg => {
+    //     console.log("Sending All Users");
+    //     connection.send(JSON.stringify(msg));
+    // });
+
+    connection.on("message", (msg) => {
+        const {type, message, userFrom, userTo} = JSON.parse(msg);
+        if(type == 'GET'){
+            if(message == 'Users'){
+                getUsers().then(msg => {
+                        console.log("Sending All Users");
+                        connection.send(JSON.stringify(msg));
+                    });
+            }
+
+            if(message == "Chat" && userFrom && userTo){
+                getChat(userFrom, userTo).then(msg => {
+                    console.log("Sending Message History");
+                    connection.send(JSON.stringify(msg));
+                });    
+            }
+        }
+
+        if(type == 'SEND Message'){
+            const msg = newMessage(userFrom, userTo, message).then(msg => {
+                console.log(msg);
+                getChat(userFrom, userTo).then(msg => {
+                    console.log("Sending Message History");
+                    connection.send(JSON.stringify(msg));
+                });   
+            });
+        }
+        
+    });
+    
+    connection.on("close", () => {
+        console.log("WS Closing");
+    });
+  })
+
 // Listen on port
 app.listen(port, () => {
-    console.log(`Running at - http://localhost:${port}`);
+    console.log(`Running at - http://127.0.0.1:${port}`);
 });
 
-//Websocket
-const webSocketServer = new WebSocket({
-    httpServer: server,
-});
 
-webSocketServer.on('request', (request) => {
-    const connection = request.accept(null, request.origin);
 
-    connection.on('message', (message) => {
-        // Handle incoming WebSocket messages here
+
+// >>>>>>>>>>> WEBSOCKET 
+
+async function getUsers(){
+
+    const redisName =  'Users';
+
+    try {
+        // Check if cached data exists in Redis or not. If yes, return cached data
+        const cachedData = await redisClient.get(redisName);
+        if (cachedData) {
+            return {
+                success: true,
+                type: 'Users',
+                message: 'Users retrieved from cache!',
+                data   : JSON.parse(cachedData)
+            };
+        }
+
+        // If cached data doesn't exist, fetch data from database and cache it
+        const results = await new Promise((resolve, reject) => {
+            DB.query('SELECT * FROM Users', (err, results) => {
+                if (err) reject(err);
+                resolve(results);
+            });
+        });
+
+        // If no data found in database, return error message
+        if (!results.length) {
+            return {
+                success: false,
+                message: 'No Users found!',
+                data   : results
+            };
+        }
+
+        // Cache data in Redis for 1 hour (3600 seconds)
+        redisClient.setEx(redisName, 3600, JSON.stringify(results));
+
+        // Return response
+        return ({
+            success: true,
+            type: 'Users',
+            message: 'Users retrieved from database successfully!',
+            data   : results
+        });
+    } catch (error) { // Catch any error
+        throw error;
+    }
+}
+
+async function getChat(from_id, to_id){
+
+    const redis_Ids = (from_id > to_id) ? from_id + '_' + to_id : to_id + '_' + from_id;
+    const redisName =  'Chat_' + redis_Ids;
+
+    try {
+        // Check if cached data exists in Redis or not. If yes, return cached data
+        const cachedData = await redisClient.get(redisName);
+        if (cachedData) {
+            return {
+                success: true,
+                type: 'Chat',
+                message: 'Chat retrieved from Cache!',
+                data   : JSON.parse(cachedData)
+            };
+        }
+
+        // If cached data doesn't exist, fetch data from database and cache it
+        const results = await new Promise((resolve, reject) => {
+            DB.query('SELECT * FROM `Messages` WHERE (from_id = ? and to_id = ?) OR (from_id = ? and to_id = ?) ORDER BY created', [from_id, to_id, to_id, from_id], (err, results) => {
+                if (err) reject(err);
+                resolve(results);
+            });
+        });
+
+        // If no data found in database, return error message
+        // if (!results.length) {
+        //     return {
+        //         success: true,
+        //         type: 'Chat'
+        //         message: 'Empty Chat',
+        //         data   : results
+        //     };
+        // }
+
+        // Cache data in Redis for 1 hour (3600 seconds)
+        redisClient.setEx(redisName, 3600, JSON.stringify(results));
+
+        // Return response
+        return ({
+            success: true,
+            type: 'Chat',
+            message: 'Chat retrieved from database successfully!',
+            data   : results
+        });
+    } catch (error) { // Catch any error
+        throw error;
+    }
+}
+
+
+async function newMessage(from_id, to_id, text){
+    //Set the time of the message to now
+    const itsNow = new Date();
+    
+    // Insert Message into database
+    const results = await new Promise((resolve, reject) => {
+        DB.query('INSERT INTO Messages (from_id, to_id, message, created) VALUES (?, ?, ?, ?)', [from_id, to_id, text, itsNow], (err, results) => {
+            if (err) reject(err);
+            resolve(results);
+        });
     });
+    
+    // If no rows affected, then Message not inserted
+    if (!results.affectedRows) {
+        return ({
+            success: false,
+            message: 'Message not recived!',
+            data   : results
+        });
+    }
 
-    connection.on('close', (reasonCode, description) => {
-        // Handle WebSocket connection closure here
+    // Delete cached data from bout Redis calls
+    const redis_Ids = (from_id > to_id) ? from_id + '_' + to_id : to_id + '_' + from_id;
+    const redisName =  'Chat_' + redis_Ids;
+    redisClient.del(redisName);
+
+    // Return response
+    return ({
+        success: true,
+        type: 'Chat Update',
+        message: 'Message recived!'
     });
-});
+}
 
-server.listen(3001, () => {
-    console.log('WebSocket server is listening on port 3001');
-});
+
+
+// >>>>>>>>>>> HTTP 
 
 // Fetching data from Database or Redis
 app.get('/users', async (req, res) => {
@@ -213,7 +384,6 @@ app.delete('/users/:id', (req, res) => {
 
 
 
-// >>>>>>>>>>> MESSAGES 
 
 // Fetching data from Database or Redis
 app.get('/messages/:firstUserId/:secondUserId', async (req, res) => {
