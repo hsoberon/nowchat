@@ -6,6 +6,7 @@ const url                   = require("url")
 const { WebSocketServer }   = require("ws")
 const mysql                 = require('mysql');
 const redis                 = require('redis');
+const uuidv4                = require("uuid").v4
 
 // Set up CORS
 const corsOptions = {
@@ -51,17 +52,34 @@ const port = 5000;
 //WebSocket Server
 const wsServer = new WebSocketServer({ port: 8080 });
 
+const connections = [];
+var connId = '';
+
+
 wsServer.on("connection", (connection, request) => {
     
-    console.log("WS Connected");
+    const { userFrom, userTo }  = url.parse(request.url, true).query
 
+    if(userFrom && userTo){
+        connId = (userFrom > userTo) ? userFrom + '_' + userTo : userTo + '_' + userFrom;
+        const uuid = uuidv4();
+        connections[uuid] = {
+            conn : connection,
+            channel : connId
+        };
+        console.log("WS Connected to channel" + connId + ' - ' + uuid);
+        console.log("Connections: " + connections.length);
+    }else{
+        console.log("WS Connected");
+    }
     // getUsers().then(msg => {
     //     console.log("Sending All Users");
     //     connection.send(JSON.stringify(msg));
     // });
 
     connection.on("message", (msg) => {
-        const {type, message, userFrom, userTo} = JSON.parse(msg);
+        const {type, message} = JSON.parse(msg);
+
         if(type == 'GET'){
             if(message == 'Users'){
                 getUsers().then(msg => {
@@ -72,18 +90,24 @@ wsServer.on("connection", (connection, request) => {
 
             if(message == "Chat" && userFrom && userTo){
                 getChat(userFrom, userTo).then(msg => {
-                    console.log("Sending Message History");
+                    console.log("Sending Message History " + userFrom + ' - ' + userTo);
                     connection.send(JSON.stringify(msg));
                 });    
             }
         }
 
         if(type == 'SEND Message'){
-            const msg = newMessage(userFrom, userTo, message).then(msg => {
-                console.log(msg);
-                getChat(userFrom, userTo).then(msg => {
-                    console.log("Sending Message History");
-                    connection.send(JSON.stringify(msg));
+            const {userFrom, userTo} = JSON.parse(msg);
+            newMessage(userFrom, userTo, message).then(text => {
+                getChat(userFrom, userTo).then(response => {
+                    Object.keys(connections).forEach(key => {
+                        if(connections[key].channel == connId){
+                            const JMsg = JSON.stringify(response);
+                            connection = connections[key].conn;
+                            connection.send(JMsg);
+                            console.log("Sending Message History to " + connId + ' - ' + key);    
+                        }
+                    });      
                 });   
             });
         }
@@ -91,7 +115,13 @@ wsServer.on("connection", (connection, request) => {
     });
     
     connection.on("close", () => {
-        console.log("WS Closing");
+        if(userFrom && userTo){
+            const connId = (userFrom > userTo) ? userFrom + '_' + userTo : userTo + '_' + userFrom;
+            delete connections[connId];
+            console.log("WS Closing " + connId);
+        }else{
+            console.log("WS Closing");
+        }
     });
   })
 
